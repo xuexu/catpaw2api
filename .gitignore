@@ -1,0 +1,14 @@
+auths/
+data/
+bin/
+config.json
+config.test.json
+.env
+*.key
+*.pem
+*.exe
+*.bak
+*.backup
+*.backup2
+credit-web.js
+*.new

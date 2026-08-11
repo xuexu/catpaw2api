@@ -1,0 +1,22 @@
+{
+  "listen": ":7867",
+  "auth_dir": "./auths",
+  "state_file": "./data/state.json",
+  "default_model": "glm-5.2",
+  "cooldown": {
+    "soft_rate": "60s",
+    "err_threshold": 3,
+    "err_cooldown": "10m"
+  },
+  "quota": {
+    "enabled": true,
+    "poll_minutes": 10,
+    "apply_threshold": 50,
+    "apply_method": "register",
+    "apply_cooldown_hours": 6,
+    "register_on_start": true
+  },
+  "upstream": {
+    "timeout_seconds": 120
+  }
+}

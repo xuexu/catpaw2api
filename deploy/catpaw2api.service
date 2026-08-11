@@ -1,0 +1,19 @@
+[Unit]
+Description=CatPaw2API - OpenAI compatible proxy for CatPaw free quota
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/catpaw2api
+EnvironmentFile=/opt/catpaw2api/.env
+ExecStart=/opt/catpaw2api/bin/catpaw2api -config /opt/catpaw2api/config.json
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/opt/catpaw2api/auths /opt/catpaw2api/data
+
+[Install]
+WantedBy=multi-user.target
