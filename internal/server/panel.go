@@ -18,7 +18,7 @@ func (h *Handler) servePanel(w http.ResponseWriter, r *http.Request) {
 	html = strings.ReplaceAll(html, "__SERVICE_NAME__", "catpaw2api")
 	html = strings.ReplaceAll(html, "__SERVICE_TITLE__", "CatPaw2API")
 	html = strings.ReplaceAll(html, "__LOGO__", "CP")
-	html = strings.ReplaceAll(html, "__ACCENT__", "#f97316")
+	html = strings.ReplaceAll(html, "__ACCENT__", "#ea580c")
 	// CatPaw：无 token 保活；「签到」按钮文案改为申请额度
 	html = strings.ReplaceAll(html, ">全员签到<", ">申请额度<")
 	html = strings.ReplaceAll(html, ">保活 Token<", ">刷新余额<")
