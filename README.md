@@ -1,7 +1,7 @@
 # CatPaw2API
 
 > CatPaw（美团 CatDesk）免费额度的 OpenAI 兼容代理。**无需安装/运行 CatPaw 客户端**，
-> 纯 Go 直连云端 API，多账号轮转 + 自动领取注册奖励/自动申请额度（对应其他项目的自动签到）。
+> 纯 Go 直连云端 API，多账号轮转。
 
 ## 与 workbuddy2api / traework2api 的对应关系
 
@@ -10,10 +10,10 @@
 | 上游形态 | WorkBuddy 云端 OAuth | TRAE SOLO 云端通道 | CatPaw 云端 HTTP 通道 |
 | 凭证 | auths/ 多账号 | auths/trae-*.json | auths/catpaw-*.json |
 | 登录 | login.sh OAuth | login.sh 回调链接 | catpaw2api login 浏览器登录 |
-| 签到/续额度 | 每日自动签到 | 每日自动签到 | 自动领注册奖励 + 余额看门狗自动申请额度 |
+| 签到/续额度 | 每日自动签到 | 每日自动签到 | - |
 | 接口 | /v1/chat/completions /v1/models | 同左 | 同左 |
 | 依赖 | Go | Go（零三方依赖） | Go（零第三方依赖） |
-| 运维脚本 | login.sh / signin.sh / credit.sh | login.sh / signin.sh / credit.sh | login.sh / apply.sh / credit.sh |
+| 运维脚本 | login.sh / signin.sh / credit.sh | login.sh / signin.sh / credit.sh | login.sh / credit.sh |
 
 ## 参考项目
 
@@ -69,7 +69,7 @@ curl -X POST http://127.0.0.1:7865/v1/chat/completions \
 ```
 
 浏览器打开 **http://127.0.0.1:7865/** 即 WebUI 控制台：
-账号余额/状态、额度调度配置、一键「申请额度」、对话测试（流式/非流式）。
+账号余额/状态、对话测试（流式/非流式）。
 首次使用输入 `CP2A_API_KEY` 即可（只存在当前浏览器会话）。
 WebUI 是纯静态单页，无外部 CDN 依赖，可直接 iframe 嵌入网站。
 
@@ -111,54 +111,11 @@ mkdir -p auths data
 docker compose up -d --build
 ```
 
-## 自动申请额度（对应自动签到）
-
-CatPaw 没有每日签到。核对逆向结果（2026.0729.1956 桌面端 + 积分中心网页）：
-
-- **注册奖励**（新用户一次性）：`POST https://catx.nocode.cn/api/gateway/credit/register`
-  body `{"registerChannel":"CATPAW_PC"}`，响应 `data.registrationBonus`（免费次数）、
-  `rewardExpireDays`、`rewardLastValidDate`。活动截止 2026-08-27。
-- **积分中心**（credit.catpaw.meituan.com）另有 `campaign/init-after-login`（活动/邀请）与
-  付费加量包购买接口。
-- 客户端里**没有**「余额低于 50 → 申请 +500」的动态按钮接口（社区说法未能在产物中证实）；
-  最接近的是注册奖励。因此 `apply_method` 默认 `register`（幂等），并保留 `campaign`
-  作为候选，实测哪个能加额度就配哪个。
-
-调度器（`quota` 配置）：
-
-```json
-{
-  "quota": {
-    "enabled": true,
-    "poll_minutes": 10,
-    "apply_threshold": 50,
-    "apply_method": "register",
-    "apply_cooldown_hours": 6,
-    "register_on_start": true
-  }
-}
-```
-
-行为：启动时对所有账号调 `register` 领取注册奖励；每 `poll_minutes` 查一次余额
-（`GET /api/gateway/credit/balance`），低于 `apply_threshold` 时按 `apply_method`
-自动申请，冷却 `apply_cooldown_hours` 防刷接口。`/status` 可看每个账号余额。
-
-手动工具：
-
-```bash
-./credit.sh                  # 额度日报（人类可读）
-./credit.sh -json            # 额度日报（JSON）
-./credit.sh -uid <uid>       # 指定账号
-./credit.sh -apply register  # 手动领注册奖励
-./apply.sh                   # 批量自动申请（低于阈值 50）
-./apply.sh -force            # 无视阈值全部申请
-```
-
 ## 配置
 
 `config.json` 全部项可用 `CP2A_*` env 覆盖（`CP2A_API_KEY` 只能走 env）：
-`CP2A_LISTEN` / `CP2A_AUTH_DIR` / `CP2A_STATE_FILE` / `CP2A_DEFAULT_MODEL` /
-`CP2A_QUOTA_*`。详见 `.env.example`。
+`CP2A_LISTEN` / `CP2A_AUTH_DIR` / `CP2A_STATE_FILE` / `CP2A_DEFAULT_MODEL`。
+详见 `.env.example`。
 
 ## 目录结构
 
