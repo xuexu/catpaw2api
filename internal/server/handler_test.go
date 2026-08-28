@@ -3,8 +3,10 @@ package server
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"catpaw2api/internal/pool"
+	"catpaw2api/internal/upstream"
 )
 
 func newTestHandler() *Handler {
@@ -21,6 +23,42 @@ func userMsgs(texts ...string) []openAIMessage {
 		out = append(out, openAIMessage{Role: "user", Text: t})
 	}
 	return out
+}
+
+func TestValidateModel(t *testing.T) {
+	h := newTestHandler() // Pool 为 nil → fetchModels 返回空
+
+	// 动态模型表拉取失败时跳过严格校验（兜底表可能滞后于上游），
+	// 未知模型也放行，交由上游判定。
+	for _, m := range []string{"", "auto", "glm-5.3-flash", "some-future-model"} {
+		if err := h.validateModel(m); err != nil {
+			t.Fatalf("model %q should pass when dynamic list unavailable, got %v", m, err)
+		}
+	}
+
+	// 动态模型表可用 → 严格校验
+	dynamicModels.Lock()
+	dynamicModels.list = []upstream.ModelInfo{{ModelTypeName: "glm-5.3-flash"}, {ModelTypeName: "kimi-k3"}}
+	dynamicModels.fetched = time.Now()
+	dynamicModels.Unlock()
+	defer func() {
+		dynamicModels.Lock()
+		dynamicModels.list = nil
+		dynamicModels.Unlock()
+	}()
+
+	for _, m := range []string{"", "AUTO", "glm-5.3-flash", "Kimi-K3"} {
+		if err := h.validateModel(m); err != nil {
+			t.Fatalf("model %q should pass, got %v", m, err)
+		}
+	}
+	err := h.validateModel("glm-9.9-beta")
+	if err == nil {
+		t.Fatal("expected error for unknown model")
+	}
+	if !contains(err.Error(), "glm-9.9-beta") || !contains(err.Error(), "glm-5.3-flash") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestPlanConversationNew(t *testing.T) {

@@ -64,17 +64,23 @@ func New(timeout time.Duration) *Client {
 // 优先按 success 字段判定（直连/聊天），否则回退 code 字段（网关）。
 // 某些端点（credit web）直接返回 data 对象，这里兼容三种形态。
 func (c *Client) doJSON(ctx context.Context, method, baseURL, path string, headers map[string]string, body any, out any) error {
+	_, err := c.doJSONRaw(ctx, method, baseURL, path, headers, body, out)
+	return err
+}
+
+// doJSONRaw 同 doJSON，额外返回原始响应体（用于上游返回异常结构时诊断）。
+func (c *Client) doJSONRaw(ctx context.Context, method, baseURL, path string, headers map[string]string, body any, out any) ([]byte, error) {
 	var rd io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rd = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, rd)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -84,7 +90,7 @@ func (c *Client) doJSON(ctx context.Context, method, baseURL, path string, heade
 	}
 	resp, err := c.httpJSON.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
@@ -110,13 +116,13 @@ func (c *Client) doJSON(ctx context.Context, method, baseURL, path string, heade
 			if msg == "" {
 				msg = "upstream error"
 			}
-			return &ApiError{Code: envelope.Code, Status: resp.StatusCode, Message: msg, Path: path}
+			return raw, &ApiError{Code: envelope.Code, Status: resp.StatusCode, Message: msg, Path: path}
 		}
 		// success=true：解 data；data 为空（如某些 ack 响应）直接返回 nil。
 		if out != nil && len(envelope.Data) > 0 {
-			return json.Unmarshal(envelope.Data, out)
+			return raw, json.Unmarshal(envelope.Data, out)
 		}
-		return nil
+		return raw, nil
 	}
 
 	// 网关信封：code!=0 且 data 为空视为错误（注意 data 与 code 都为 0 的空 ack）。
@@ -125,26 +131,26 @@ func (c *Client) doJSON(ctx context.Context, method, baseURL, path string, heade
 		if msg == "" {
 			msg = envelope.Msg
 		}
-		return &ApiError{Code: envelope.Code, Status: resp.StatusCode, Message: msg, Path: path}
+		return raw, &ApiError{Code: envelope.Code, Status: resp.StatusCode, Message: msg, Path: path}
 	}
 	// 网关 code=0 或裸 data 响应。
 	if out != nil && len(envelope.Data) > 0 {
-		return json.Unmarshal(envelope.Data, out)
+		return raw, json.Unmarshal(envelope.Data, out)
 	}
 	if out != nil && len(envelope.Data) == 0 && envelope.Code == 0 && envelope.Success == nil {
 		// 可能是 credit web 裸 data 对象：整体当作 data 解析。
 		if json.Unmarshal(raw, out) == nil {
-			return nil
+			return raw, nil
 		}
-		return nil
+		return raw, nil
 	}
 	if resp.StatusCode >= 400 {
-		return &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(raw), 200), Path: path}
+		return raw, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(raw), 200), Path: path}
 	}
 	if out != nil {
-		return json.Unmarshal(raw, out)
+		return raw, json.Unmarshal(raw, out)
 	}
-	return nil
+	return raw, nil
 }
 
 // gatewayHeaders 网关 REST 请求头。
@@ -425,11 +431,14 @@ func (c *Client) SendMessage(ctx context.Context, token, chatID, prompt, model s
 		body["model"] = model
 	}
 	var out AgentStreamResp
-	if err := c.doJSON(ctx, http.MethodPost, NocodeHost, EpChatAgentStream, nocodeHeaders(token), body, &out); err != nil {
+	raw, err := c.doJSONRaw(ctx, http.MethodPost, NocodeHost, EpChatAgentStream, nocodeHeaders(token), body, &out)
+	if err != nil {
 		return nil, err
 	}
 	if out.ConversationID == "" {
-		return nil, fmt.Errorf("agent-stream: empty conversationId")
+		// 上游返回成功信封但无 conversationId：常见于同一账号并发多个 agent 任务
+		// 或模型/计划不支持，附上原始响应便于定位。
+		return nil, fmt.Errorf("agent-stream: empty conversationId (resp: %s)", truncateStr(string(raw), 200))
 	}
 	return &out, nil
 }

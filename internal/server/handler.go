@@ -54,6 +54,10 @@ type Handler struct {
 	convMu sync.Mutex
 	convs  map[string]*convState // conversationID → 会话
 	latest map[string]string     // account → 最近会话 conversationID
+
+	// sendMu 按账号名串行化上游发送（同一账号同时只跑一个 agent 任务，
+	// 并发任务会被上游静默拒绝 → agent-stream: empty conversationId）。
+	sendMu sync.Map
 }
 
 // convState 一个服务端会话的网关侧状态。
@@ -168,6 +172,18 @@ var dynamicModels struct {
 	lastFail time.Time
 }
 
+// fallbackModelNames 模型表兜底列表（与 model-types 真实返回保持一致）。
+var fallbackModelNames = []string{
+	upstream.ExactModelAuto,
+	upstream.ExactModelLongCat2,
+	upstream.ExactModelDeepseekV4Flash,
+	upstream.ExactModelDeepseekV4Pro,
+	upstream.ExactModelGLM52,
+	upstream.ExactModelMiniMaxM3,
+	upstream.ExactModelKimiK3,
+	"glm-5.3-flash", // 2026-08 实测上游已支持，静态表可能滞后
+}
+
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": h.modelList()})
 }
@@ -200,17 +216,8 @@ func (h *Handler) modelList() []map[string]any {
 	}
 	// 兜底：逆向自 app.asar 的真实模型表（tenant=CatDesk,scene=CATX_APP,env=EXTERNAL 返回的 7 个）。
 	// FetchModels 失败时用这份，确保 /v1/models 永远返回真实可用模型。
-	names := []string{
-		upstream.ExactModelAuto,
-		upstream.ExactModelLongCat2,
-		upstream.ExactModelDeepseekV4Flash,
-		upstream.ExactModelDeepseekV4Pro,
-		upstream.ExactModelGLM52,
-		upstream.ExactModelMiniMaxM3,
-		upstream.ExactModelKimiK3,
-	}
-	out := make([]map[string]any, 0, len(names))
-	for _, n := range names {
+	out := make([]map[string]any, 0, len(fallbackModelNames))
+	for _, n := range fallbackModelNames {
 		out = append(out, map[string]any{"id": n, "object": "model", "created": 1753600000, "owned_by": "catpaw"})
 	}
 	return out
@@ -280,6 +287,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		toolsBlock = buildToolsPrompt(normalizeTools(req.Tools), req.ToolChoice)
 	}
 
+	// 模型校验：未知模型直接拒绝（请求级，不消耗账号重试），
+	// 避免透传上游触发 agent-stream: empty conversationId 并把可用账号拖入冷却。
+	if merr := h.validateModel(req.Model); merr != nil {
+		writeOpenAIError(w, http.StatusNotFound, "model_not_found", merr.Error())
+		return
+	}
+
 	// 显式 conversation_id → 锁定属主账号（会话按 chatId 续接，token 必须匹配）。
 	var forced *pool.Account
 	var forcedConv *convState
@@ -330,8 +344,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		model := h.mapModel(req.Model, acct.DefaultModel)
 
+		// 同一账号串行化整个上游交互（创建/发送/轮询），
+		// 避免并发任务触发上游的空 conversationId。
+		muAny, _ := h.sendMu.LoadOrStore(acct.Name, &sync.Mutex{})
+		acctMu := muAny.(*sync.Mutex)
+		acctMu.Lock()
+
 		conv, isNew, prompt, perr := h.planConversation(acct, req, forcedConv, toolsBlock)
 		if perr != nil {
+			acctMu.Unlock()
 			// 请求级问题（如没有新消息），换号无意义。
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", perr.Error())
 			return
@@ -339,6 +360,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		conv, derr := h.driveConversation(r.Context(), acct, conv, isNew, prompt, model)
 		if derr != nil {
+			acctMu.Unlock()
 			lastErr = derr
 			h.handleUpstreamError(acct, derr)
 			continue
@@ -348,6 +370,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		result, perr := acct.Client.PollAssistant(r.Context(), acct.Auth.Token(), acct.UID, conv.ConversationID, upstream.PollOpts{
 			Timeout: h.upstreamTimeout(),
 		})
+		acctMu.Unlock()
 		if perr != nil {
 			lastErr = perr
 			h.handleUpstreamError(acct, perr)
@@ -656,6 +679,42 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, err error) {
 		return
 	}
 	h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+}
+
+// validateModel 校验请求的 model 是否在上游可用模型表中。
+// 空 / auto 视为有效（由 mapModel 解析为账号默认模型）。
+// 上游对未知模型会返回成功信封但不带 conversationId，导致
+// "agent-stream: empty conversationId"，这里提前拦截。
+func (h *Handler) validateModel(model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" || model == upstream.ExactModelAuto {
+		return nil
+	}
+	known := map[string]bool{}
+	ordered := make([]string, 0, len(fallbackModelNames))
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || known[strings.ToLower(id)] {
+			return
+		}
+		known[strings.ToLower(id)] = true
+		ordered = append(ordered, id)
+	}
+	for _, m := range h.fetchModels() {
+		add(m.ID())
+	}
+	if len(known) == 0 {
+		// 动态模型表拉取失败时跳过严格校验（兜底表可能滞后于上游新增模型，
+		// 误拒会阻断本可正常使用的模型），仍交由上游判定。
+		return nil
+	}
+	for _, n := range fallbackModelNames {
+		add(n)
+	}
+	if known[strings.ToLower(model)] {
+		return nil
+	}
+	return fmt.Errorf("model %q 不在上游可用模型表中，可用模型: %s", model, strings.Join(ordered, ", "))
 }
 
 // mapModel 解析 model：空/auto → 账号默认；其他 → 原样透传。
