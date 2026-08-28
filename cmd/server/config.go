@@ -68,15 +68,18 @@ func Default() *Config {
 }
 
 // Load 加载配置 + CP2A_* env 覆盖。
+// path 为空时使用纯默认值；path 指定的文件必须存在，否则报错。
 func Load(path string) (*Config, error) {
 	c := Default()
 	if path != "" {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			if !os.IsNotExist(err) {
-				return nil, fmt.Errorf("read config: %w", err)
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("config file not found: %s (copy config.example.json to config.json first)", path)
 			}
-		} else if err := json.Unmarshal(raw, c); err != nil {
+			return nil, fmt.Errorf("read config: %w", err)
+		}
+		if err := json.Unmarshal(raw, c); err != nil {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
 	}

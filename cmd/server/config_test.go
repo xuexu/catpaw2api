@@ -3,12 +3,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestDefaultConfig(t *testing.T) {
-	c, err := Load(filepath.Join(t.TempDir(), "nonexistent.json"))
+	c, err := Load("") // 纯默认值
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,6 +30,17 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if !c.Quota.Enabled || c.Quota.ApplyMethod != "register" || c.Quota.ApplyThreshold != 50 {
 		t.Fatalf("quota=%+v", c.Quota)
+	}
+}
+
+func TestLoadMissingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nonexistent.json")
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for missing config file")
+	}
+	if !strings.Contains(err.Error(), "config file not found") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -1,0 +1,26 @@
+# 本地开发/演练配置：使用当前目录代码构建镜像并运行
+# 用法：
+#   docker compose -f docker-compose.local.yml up -d --build
+#   docker compose -f docker-compose.local.yml logs -f
+# 说明：
+#   - 镜像固定打标签 catpaw2api:local，避免与正式镜像混淆
+#   - 强制挂载本地 config.json（只读）；文件不存在时服务会以
+#     "config file not found" 明确报错退出，请先执行
+#     cp config.example.json config.json 生成配置
+services:
+  catpaw2api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: catpaw2api:local
+    container_name: catpaw2api-local
+    restart: unless-stopped
+    ports:
+      - "7867:7867"
+    environment:
+      CP2A_API_KEY: ${CP2A_API_KEY:-change-me}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./auths:/app/auths
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro

@@ -103,6 +103,26 @@ input{font:inherit}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid color-mix(in srgb,var(--accent) 30%,transparent);border-top-color:var(--accent);border-radius:50%;animation:sp .8s linear infinite;vertical-align:-1px;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .status-line{min-height:20px;font-size:13px}
+/* ---------- Playground 演练场 ---------- */
+.pg{display:flex;flex-direction:column;gap:10px}
+.pg-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.pg-toolbar label{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap}
+.pg select,.pg input[type=text]{background:rgba(255,255,255,.85);border:1px solid var(--line);border-radius:var(--radius-sm);padding:7px 10px;color:var(--text);outline:none;font:inherit}
+.pg select:focus,.pg input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent)}
+.pg-check{display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
+.pg-check input{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
+.pg-system{flex:1;min-width:180px}
+.pg-msgs{display:flex;flex-direction:column;gap:10px;max-height:460px;min-height:120px;overflow-y:auto;padding:4px 2px}
+.pg-msg{max-width:86%;padding:10px 13px;border-radius:14px;line-height:1.6;font-size:13.5px;white-space:pre-wrap;word-break:break-word;box-shadow:0 2px 8px rgba(30,41,59,.06)}
+.pg-msg.user{align-self:flex-end;background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--accent) 78%,#fff));color:#fff;border-bottom-right-radius:4px}
+.pg-msg.assistant{align-self:flex-start;background:rgba(255,255,255,.92);border:1px solid rgba(255,255,255,.9);border-bottom-left-radius:4px}
+.pg-msg.assistant .reasoning{margin:0 0 8px;padding:8px 10px;background:rgba(100,116,139,.08);border-left:3px solid var(--line);border-radius:6px;color:var(--muted);font-size:12px;white-space:pre-wrap}
+.pg-msg.assistant .meta{margin-top:6px;font-size:11px;color:var(--muted);font-family:var(--font-mono)}
+.pg-msg.error{align-self:center;max-width:100%;background:rgba(220,38,38,.08);border:1px solid color-mix(in srgb,var(--bad) 35%,transparent);color:#b91c1c;font-size:13px}
+.pg-input-row{display:flex;gap:8px;align-items:flex-end}
+.pg-input-row textarea{flex:1;resize:vertical;min-height:64px;max-height:200px;background:rgba(255,255,255,.88);border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);outline:none;font:inherit;line-height:1.5}
+.pg-input-row textarea:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent)}
+.pg-hint{font-size:11px;color:var(--muted)}
 @media (prefers-reduced-motion:reduce){
   *{animation:none!important;transition:none!important}
   .btn:hover{transform:none}
@@ -142,6 +162,7 @@ input{font:inherit}
     <div class="actions">
       <button class="btn primary" id="btnAddAccount">＋ 授权登录</button>
       <button class="btn" id="btnRefresh">刷新</button>
+      <button class="btn" id="btnPlayground">演练场</button>
       <button class="btn" id="btnCredits">拉积分</button>
       <button class="btn" id="btnCheckin">全员签到</button>
       <button class="btn" id="btnKeepalive">保活 Token</button>
@@ -194,6 +215,28 @@ input{font:inherit}
         <span>OpenAI base: <span class="mono" id="baseUrl"></span></span>
         <span>API: <span class="mono">/v1/chat/completions</span></span>
       </div>
+    </div>
+  </div>
+
+  <div class="card" id="playground">
+    <div class="card-h">
+      <h2>演练场</h2>
+      <span class="muted mono" id="pgConvId"></span>
+    </div>
+    <div class="card-b pg">
+      <div class="pg-toolbar">
+        <label for="pgModel">模型</label>
+        <select id="pgModel"><option value="">（默认）</option></select>
+        <label class="pg-check" title="流式输出逐字显示；关闭则一次性返回全文"><input type="checkbox" id="pgStream" checked/> 流式</label>
+        <input type="text" id="pgSystem" class="pg-system" placeholder="System 提示词（可选，如：你是一个简洁的助手）"/>
+        <button class="btn" id="pgClear" title="清空对话并开启全新会话">新会话</button>
+      </div>
+      <div class="pg-msgs" id="pgMsgs"><div class="empty">发送一条消息开始与上游 AI 对话</div></div>
+      <div class="pg-input-row">
+        <textarea id="pgInput" placeholder="输入消息，Enter 发送 / Shift+Enter 换行"></textarea>
+        <button class="btn primary" id="pgSend" style="padding:10px 18px">发送</button>
+      </div>
+      <div class="pg-hint">会话上下文由服务端按 conversation_id 自动续接；「新会话」清空记录并开启全新对话。</div>
     </div>
   </div>
 </div>
@@ -338,6 +381,160 @@ function render(data){
   if (sch.checkin_hours?.length) chips.push(`<span class="chip">签到 ${sch.checkin_hours.map(h=>String(h).padStart(2,"0")+":00").join(" / ")}</span>`);
   if (sch.keepalive_hours?.length) chips.push(`<span class="chip">保活 ${sch.keepalive_hours.map(h=>String(h).padStart(2,"0")+":00").join(" / ")}</span>`);
   $("schedChips").innerHTML = chips.join("") || `<span class="muted">未配置</span>`;
+
+  renderPgModels(models);
+}
+
+/* ---------- Playground 演练场 ---------- */
+let pgConvId = "";
+let pgBusy = false;
+let pgHistory = []; // 不含 system 的完整历史，发请求时全量回发
+
+function renderPgModels(models){
+  const sel = $("pgModel");
+  if (!sel) return;
+  const cur = sel.value;
+  const names = (models || []).map(m => m.id || String(m)).filter(Boolean);
+  sel.innerHTML = names.length
+    ? names.map(n => `<option value="${escapeAttr(n)}">${escapeHtml(n)}</option>`).join("")
+    : `<option value="">（默认）</option>`;
+  // 保留用户已选的模型（若仍在列表里）
+  if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+
+function pgScroll(){
+  const box = $("pgMsgs");
+  box.scrollTop = box.scrollHeight;
+}
+
+function pgAppend(cls, html){
+  const box = $("pgMsgs");
+  const empty = box.querySelector(".empty");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = "pg-msg " + cls;
+  div.innerHTML = html;
+  box.appendChild(div);
+  pgScroll();
+  return div;
+}
+
+async function pgSend(){
+  if (pgBusy) return;
+  if (!getKey()){ toast("请先登录", false); showLogin(); return; }
+  const input = $("pgInput");
+  const text = input.value.trim();
+  if (!text){ toast("请输入消息", false); return; }
+  input.value = "";
+
+  pgHistory.push({role:"user", content:text});
+  pgAppend("user", escapeHtml(text));
+
+  const messages = [];
+  const sys = $("pgSystem").value.trim();
+  if (sys) messages.push({role:"system", content: sys});
+  messages.push(...pgHistory);
+
+  const stream = $("pgStream").checked;
+  const payload = {messages, stream};
+  const model = $("pgModel").value;
+  if (model) payload.model = model;
+  if (pgConvId) payload.conversation_id = pgConvId;
+
+  pgBusy = true;
+  $("pgSend").disabled = true;
+  const div = pgAppend("assistant", "");
+  div.innerHTML = `<div class="reasoning hidden"></div><div class="content"><span class="spin"></span></div><div class="meta hidden"></div>`;
+  const rEl = div.querySelector(".reasoning");
+  const cEl = div.querySelector(".content");
+  const mEl = div.querySelector(".meta");
+
+  const t0 = performance.now();
+  let content = "", reasoning = "", usedModel = model;
+  try {
+    const headers = {"Content-Type":"application/json"};
+    const key = getKey();
+    if (key) headers["Authorization"] = "Bearer " + key;
+    const res = await fetch((BASE || "") + "/v1/chat/completions", {
+      method:"POST", headers, body: JSON.stringify(payload)
+    });
+    if (!res.ok){
+      let msg = res.statusText || ("HTTP " + res.status);
+      try {
+        const j = await res.json();
+        msg = j?.error?.message || j?.message || msg;
+      } catch {}
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    // 两种响应都在 headers 里带回 conversation_id（续接多轮上下文用）
+    const cid = res.headers.get("X-Catpaw-Conversation-Id");
+    if (cid) pgConvId = cid;
+
+    if (stream && res.body){
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      const handleChunk = (raw) => {
+        const line = raw.split("\n").find(l => l.startsWith("data:"));
+        if (!line) return;
+        const data = line.slice(5).trim();
+        if (!data || data === "[DONE]") return;
+        try {
+          const chunk = JSON.parse(data);
+          if (chunk.model) usedModel = chunk.model;
+          const d = chunk.choices?.[0]?.delta || {};
+          if (d.reasoning_content) reasoning += d.reasoning_content;
+          if (d.content) content += d.content;
+        } catch {}
+      };
+      while (true){
+        const {done, value} = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, {stream:true});
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0){
+          handleChunk(buf.slice(0, idx));
+          buf = buf.slice(idx + 2);
+        }
+      }
+      if (buf.trim()) handleChunk(buf);
+    } else {
+      const data = await res.json();
+      const m = data.choices?.[0]?.message || {};
+      content = m.content || "";
+      reasoning = m.reasoning_content || "";
+      usedModel = data.model || usedModel;
+      if (data.conversation_id) pgConvId = data.conversation_id;
+    }
+
+    rEl.textContent = reasoning;
+    rEl.classList.toggle("hidden", !reasoning);
+    cEl.textContent = content || "(空回复)";
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    mEl.textContent = `${usedModel || "(默认模型)"} · ${secs}s`;
+    mEl.classList.remove("hidden");
+    pgHistory.push({role:"assistant", content});
+    pgConvBadge();
+    pgScroll();
+  } catch (e){
+    div.remove();
+    pgHistory.pop(); // 移除未送达的 user 消息，便于重试
+    pgAppend("error", "✗ " + escapeHtml(e.message));
+  } finally {
+    pgBusy = false;
+    $("pgSend").disabled = false;
+  }
+}
+
+function pgConvBadge(){
+  $("pgConvId").textContent = pgConvId ? "conv: " + pgConvId.slice(0, 10) + "…" : "";
+}
+
+function pgReset(){
+  pgConvId = "";
+  pgHistory = [];
+  $("pgMsgs").innerHTML = `<div class="empty">发送一条消息开始与上游 AI 对话</div>`;
+  pgConvBadge();
 }
 
 function escapeHtml(s){
@@ -533,6 +730,16 @@ $("oauthCopy").onclick = async () => {
     ta.remove();
   }
 };
+
+$("btnPlayground").onclick = () => {
+  $("playground").scrollIntoView({behavior:"smooth", block:"start"});
+  $("pgInput").focus();
+};
+$("pgSend").onclick = pgSend;
+$("pgClear").onclick = () => { pgReset(); toast("已开启新会话"); };
+$("pgInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); pgSend(); }
+});
 
 // 经由 hub 反代时 hub 会自动注入服务 api_key，直接尝试加载；
 // 失败（如直连且未带 key）再回退到登录表单。
