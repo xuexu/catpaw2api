@@ -499,12 +499,31 @@ func (h *Handler) planConversation(acct *pool.Account, req *chatRequest, forcedC
 			log.Printf("chat conv=%s reusing chatId (client did not replay full history)", conv.ConversationID)
 			return conv, false, prompt, nil
 		}
-		log.Printf("chat conv=%s history diverged, starting new conversation", conv.ConversationID)
+		log.Printf("chat conv=%s history diverged, starting new conversation (incoming=%d msgs roles=[%s] absorbed=%d)",
+			conv.ConversationID, len(req.Messages), roleList(req.Messages), conv.Absorbed)
 	}
 	return nil, true, renderFullPrompt(req.Messages, toolsBlock), nil
 }
 
+// roleList 消息角色序列（诊断用，最多 16 条）。
+func roleList(msgs []openAIMessage) string {
+	n := len(msgs)
+	if n > 16 {
+		msgs = msgs[:16]
+	}
+	parts := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		parts = append(parts, m.Role)
+	}
+	if n > 16 {
+		parts = append(parts, fmt.Sprintf("…(%d more)", n-16))
+	}
+	return strings.Join(parts, ",")
+}
+
 // driveConversation 把提示词真正发给上游（新会话先 create 再 send）。
+// 新会话路径对失败做一次退避重试：上游偶发 "Agent 对话 create 失败，请稍后重试"
+// （通常是上一轮 agent 流尚未完全关闭），隔几秒换新 chatID 重试一次。
 func (h *Handler) driveConversation(ctx context.Context, acct *pool.Account, conv *convState, isNew bool, prompt, model string) (*convState, error) {
 	if !isNew && conv != nil {
 		if _, err := acct.Client.SendMessage(ctx, acct.Auth.Token(), conv.ChatID, prompt, model); err != nil {
@@ -512,20 +531,34 @@ func (h *Handler) driveConversation(ctx context.Context, acct *pool.Account, con
 		}
 		return conv, nil
 	}
-	chatID := "desk-" + randHex(16)
-	if err := acct.Client.CreateChat(ctx, acct.Auth.Token(), chatID, prompt); err != nil {
-		return nil, fmt.Errorf("create chat: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			log.Printf("chat create retry attempt=%d account=%s backoff=3s", attempt, acct.Name)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(3 * time.Second):
+			}
+		}
+		chatID := "desk-" + randHex(16)
+		if err := acct.Client.CreateChat(ctx, acct.Auth.Token(), chatID, prompt); err != nil {
+			lastErr = fmt.Errorf("create chat: %w", err)
+			continue
+		}
+		resp, err := acct.Client.SendMessage(ctx, acct.Auth.Token(), chatID, prompt, model)
+		if err != nil {
+			lastErr = fmt.Errorf("send message: %w", err)
+			continue
+		}
+		log.Printf("chat conv created account=%s chat=%s conv=%s", acct.Name, chatID, resp.ConversationID)
+		return &convState{
+			ChatID:         chatID,
+			ConversationID: resp.ConversationID,
+			Account:        acct.Name,
+		}, nil
 	}
-	resp, err := acct.Client.SendMessage(ctx, acct.Auth.Token(), chatID, prompt, model)
-	if err != nil {
-		return nil, fmt.Errorf("send message: %w", err)
-	}
-	log.Printf("chat conv created account=%s chat=%s conv=%s", acct.Name, chatID, resp.ConversationID)
-	return &convState{
-		ChatID:         chatID,
-		ConversationID: resp.ConversationID,
-		Account:        acct.Name,
-	}, nil
+	return nil, lastErr
 }
 
 // finalizeConversation 把本轮吸收的消息（含助手回复）写入会话状态并落盘。
