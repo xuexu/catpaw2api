@@ -130,7 +130,65 @@ func NewHandler(cfg Config) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.mux.ServeHTTP(w, r)
+	h.withLogging(h.mux).ServeHTTP(w, r)
+}
+
+// statusWriter 捕获响应状态码（http.ResponseWriter 写完才可知晓）。
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (sw *statusWriter) WriteHeader(code int) {
+	sw.status = code
+	sw.ResponseWriter.WriteHeader(code)
+}
+
+func (sw *statusWriter) Write(b []byte) (int, error) {
+	if sw.status == 0 {
+		sw.status = http.StatusOK
+	}
+	n, err := sw.ResponseWriter.Write(b)
+	sw.bytes += n
+	return n, err
+}
+
+// withLogging 请求访问日志中间件：每个请求一行摘要。
+// 形如: req POST /v1/chat/completions status=200 dur=1.2s bytes=3456 remote=1.2.3.4
+func (h *Handler) withLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w}
+		defer func() {
+			dur := time.Since(start).Round(time.Millisecond)
+			status := sw.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			// 健康检查等高频探活不记录，避免刷屏。
+			if r.URL.Path == "/healthz" {
+				return
+			}
+			log.Printf("req %s %s status=%d dur=%s bytes=%d remote=%s",
+				r.Method, r.URL.Path, status, dur, sw.bytes, remoteAddr(r))
+		}()
+		next.ServeHTTP(sw, r)
+	})
+}
+
+func remoteAddr(r *http.Request) string {
+	// 反代场景优先取 X-Forwarded-For 首个地址。
+	if xf := r.Header.Get("X-Forwarded-For"); xf != "" {
+		if i := strings.IndexByte(xf, ','); i >= 0 {
+			return strings.TrimSpace(xf[:i])
+		}
+		return strings.TrimSpace(xf)
+	}
+	if i := strings.LastIndexByte(r.RemoteAddr, ':'); i > 0 {
+		return r.RemoteAddr[:i]
+	}
+	return r.RemoteAddr
 }
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -362,6 +420,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if derr != nil {
 			acctMu.Unlock()
 			lastErr = derr
+			log.Printf("chat fail account=%s model=%s stage=drive error=%v", acct.Name, model, derr)
 			h.handleUpstreamError(acct, derr)
 			continue
 		}
@@ -373,6 +432,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		acctMu.Unlock()
 		if perr != nil {
 			lastErr = perr
+			log.Printf("chat fail account=%s model=%s stage=poll error=%v", acct.Name, model, perr)
 			h.handleUpstreamError(acct, perr)
 			continue
 		}
@@ -405,6 +465,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if lastErr != nil {
 		msg += ": " + lastErr.Error()
 	}
+	log.Printf("chat fail request model=%s stream=%v status=503 detail=%v", req.Model, req.Stream, lastErr)
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
 }
 

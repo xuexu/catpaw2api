@@ -61,6 +61,32 @@ func TestDoJSONEnvelope(t *testing.T) {
 	}
 }
 
+// SendMessage：上游 data.success=false 时必须透传 errorCode/errorMessage，
+// 而不是报笼统的 empty conversationId。
+func TestSendMessageUpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"conversationId":null,"roundId":null,` +
+			`"streamMessageId":"1","userMessageId":"2","assistantMessageId":"3",` +
+			`"success":false,"errorCode":500,"errorMessage":"<mock upstream failure detail>"}}`))
+	}))
+	defer srv.Close()
+	old := NocodeHost
+	NocodeHost = srv.URL
+	defer func() { NocodeHost = old }()
+
+	c := New(time.Minute)
+	_, err := c.SendMessage(context.Background(), "tok", "chat1", "hi", "glm-5.3-flash")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "upstream error") ||
+		!strings.Contains(err.Error(), "code=500") ||
+		!strings.Contains(err.Error(), "<mock upstream failure detail>") {
+		t.Fatalf("err=%v should surface upstream errorCode/errorMessage", err)
+	}
+}
+
 // 直连/聊天信封 {unifyCode,code,msg,data,success} 必须按 success 判定。
 func TestDoJSONDirectEnvelope(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

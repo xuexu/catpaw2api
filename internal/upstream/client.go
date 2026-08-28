@@ -402,6 +402,11 @@ func (c *Client) CreateChat(ctx context.Context, token, chatID, prompt string) e
 type AgentStreamResp struct {
 	ConversationID  string `json:"conversationId"`
 	StreamMessageID string `json:"streamMessageId"`
+	// 上游失败时 data 内会带 success:false + errorCode/errorMessage，
+	// 但外层信封仍是 code:0，必须解析这些字段才能拿到真实失败原因。
+	Success      *bool  `json:"success"`
+	ErrorCode    int    `json:"errorCode"`
+	ErrorMessage string `json:"errorMessage"`
 }
 
 // SendMessage 发送用户消息（nocode 流程第二步），返回 conversationId。
@@ -435,10 +440,15 @@ func (c *Client) SendMessage(ctx context.Context, token, chatID, prompt, model s
 	if err != nil {
 		return nil, err
 	}
+	if out.Success != nil && !*out.Success {
+		// 上游明确失败：透传 errorCode/errorMessage，附原始响应便于定位。
+		return nil, fmt.Errorf("agent-stream: upstream error code=%d message=%q (resp: %s)",
+			out.ErrorCode, truncateStr(out.ErrorMessage, 300), truncateStr(string(raw), 300))
+	}
 	if out.ConversationID == "" {
 		// 上游返回成功信封但无 conversationId：常见于同一账号并发多个 agent 任务
 		// 或模型/计划不支持，附上原始响应便于定位。
-		return nil, fmt.Errorf("agent-stream: empty conversationId (resp: %s)", truncateStr(string(raw), 200))
+		return nil, fmt.Errorf("agent-stream: empty conversationId (resp: %s)", truncateStr(string(raw), 500))
 	}
 	return &out, nil
 }

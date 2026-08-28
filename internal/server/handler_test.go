@@ -2,6 +2,8 @@ package server
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -23,6 +25,38 @@ func userMsgs(texts ...string) []openAIMessage {
 		out = append(out, openAIMessage{Role: "user", Text: t})
 	}
 	return out
+}
+
+func TestWithLogging(t *testing.T) {
+	h := newTestHandler()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte(`{"error":"x"}`))
+	})
+	hh := h.withLogging(mux)
+
+	// 404
+	rec := httptest.NewRecorder()
+	hh.ServeHTTP(rec, httptest.NewRequest("GET", "/nope", nil))
+	if rec.Code != 404 {
+		t.Fatalf("code=%d", rec.Code)
+	}
+
+	// 401 带响应体
+	rec = httptest.NewRecorder()
+	hh.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	if rec.Code != 401 || rec.Body.Len() == 0 {
+		t.Fatalf("code=%d body=%d", rec.Code, rec.Body.Len())
+	}
+
+	// healthz 正常透传
+	rec = httptest.NewRecorder()
+	hh.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	if rec.Code != 200 {
+		t.Fatalf("healthz code=%d", rec.Code)
+	}
 }
 
 func TestValidateModel(t *testing.T) {
