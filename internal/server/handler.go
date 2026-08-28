@@ -71,8 +71,13 @@ type convState struct {
 	Account        string `json:"account"`
 	Absorbed       int    `json:"absorbed"`
 	Fingerprint    string `json:"fingerprint"`
+	Turns          int    `json:"turns"`
 	UpdatedAt      int64  `json:"updated_at"`
 }
+
+// maxConvTurns 同一 chatId 最大复用轮次：无状态客户端连续提问时复用最近
+// 会话，但超过该轮次后新建，避免上游上下文无限增长。
+const maxConvTurns = 40
 
 // convFile 会话持久化文件格式。
 type convFile struct {
@@ -499,10 +504,28 @@ func (h *Handler) planConversation(acct *pool.Account, req *chatRequest, forcedC
 			log.Printf("chat conv=%s reusing chatId (client did not replay full history)", conv.ConversationID)
 			return conv, false, prompt, nil
 		}
+		// 无状态客户端（每次只发 system+user，不回放历史、消息里无 assistant）：
+		// 复用最近 chatId 把本次消息当新一轮提问发出，避免频繁 create 新会话
+		// 触发上游 "Agent 对话 create 失败"。轮次超限后新建。
+		if conv.ChatID != "" && conv.Turns < maxConvTurns && !hasAssistant(req.Messages) {
+			prompt = renderTailPrompt(req.Messages, toolsBlock)
+			log.Printf("chat conv=%s reusing chatId (stateless client, turns=%d)", conv.ConversationID, conv.Turns)
+			return conv, false, prompt, nil
+		}
 		log.Printf("chat conv=%s history diverged, starting new conversation (incoming=%d msgs roles=[%s] absorbed=%d)",
 			conv.ConversationID, len(req.Messages), roleList(req.Messages), conv.Absorbed)
 	}
 	return nil, true, renderFullPrompt(req.Messages, toolsBlock), nil
+}
+
+// hasAssistant 判断消息列表中是否含 assistant 角色（回放历史的客户端会带上轮回复）。
+func hasAssistant(msgs []openAIMessage) bool {
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			return true
+		}
+	}
+	return false
 }
 
 // roleList 消息角色序列（诊断用，最多 16 条）。
@@ -526,10 +549,12 @@ func roleList(msgs []openAIMessage) string {
 // （通常是上一轮 agent 流尚未完全关闭），隔几秒换新 chatID 重试一次。
 func (h *Handler) driveConversation(ctx context.Context, acct *pool.Account, conv *convState, isNew bool, prompt, model string) (*convState, error) {
 	if !isNew && conv != nil {
-		if _, err := acct.Client.SendMessage(ctx, acct.Auth.Token(), conv.ChatID, prompt, model); err != nil {
-			return nil, fmt.Errorf("send message: %w", err)
+		if _, err := acct.Client.SendMessage(ctx, acct.Auth.Token(), conv.ChatID, prompt, model); err == nil {
+			return conv, nil
+		} else {
+			// 复用失败（会话可能已过期/被删）：降级新建会话，不直接报错。
+			log.Printf("chat reuse chatId=%s failed, falling back to new chat: %v", conv.ChatID, err)
 		}
-		return conv, nil
 	}
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
@@ -556,6 +581,7 @@ func (h *Handler) driveConversation(ctx context.Context, acct *pool.Account, con
 			ChatID:         chatID,
 			ConversationID: resp.ConversationID,
 			Account:        acct.Name,
+			Turns:          1,
 		}, nil
 	}
 	return nil, lastErr
@@ -571,6 +597,7 @@ func (h *Handler) finalizeConversation(acct *pool.Account, conv *convState, req 
 	defer h.convMu.Unlock()
 	conv.Absorbed = len(req.Messages) + 1
 	conv.Fingerprint = fp
+	conv.Turns++
 	conv.UpdatedAt = time.Now().Unix()
 	h.convs[conv.ConversationID] = conv
 	h.latest[acct.Name] = conv.ConversationID

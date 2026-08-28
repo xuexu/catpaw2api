@@ -150,6 +150,35 @@ func TestPlanConversationContinueAndReplay(t *testing.T) {
 	}
 }
 
+// 无状态客户端（每次只发 system+user，无 assistant 回放）→ 复用最近 chatId。
+func TestPlanConversationStatelessReuse(t *testing.T) {
+	h := newTestHandler()
+	acct := &pool.Account{Name: "a"}
+	conv := &convState{ChatID: "c1", ConversationID: "x1", Account: "a", Absorbed: 3, Turns: 3}
+	h.convs["x1"] = conv
+	h.latest["a"] = "x1"
+
+	// 客户端全新 [system, user]，指纹必然不匹配 → 复用会话发尾部
+	req := &chatRequest{Messages: []openAIMessage{
+		{Role: "system", Text: "you are a bot"},
+		{Role: "user", Text: "new question"},
+	}}
+	out, isNew, prompt, err := h.planConversation(acct, req, nil, "")
+	if err != nil || isNew || out != conv {
+		t.Fatalf("out=%v isNew=%v err=%v", out, isNew, err)
+	}
+	if !contains(prompt, "new question") {
+		t.Fatalf("prompt=%q", prompt)
+	}
+
+	// 轮次超限 → 新会话
+	conv.Turns = maxConvTurns
+	out2, isNew2, _, err := h.planConversation(acct, req, nil, "")
+	if err != nil || !isNew2 || out2 != nil {
+		t.Fatalf("out=%v isNew=%v err=%v", out2, isNew2, err)
+	}
+}
+
 func TestPlanConversationForced(t *testing.T) {
 	h := newTestHandler()
 	conv := &convState{ChatID: "c1", ConversationID: "x1", Account: "a", Absorbed: 1}
